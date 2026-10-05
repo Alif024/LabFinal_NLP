@@ -31,21 +31,22 @@
 - [x] `.gitignore` ใส่ `.streamlit/secrets.toml`
 
 ## 5. GitHub & Deploy
-- [ ] ตรวจให้แน่ใจว่า **ไม่มี API Key ใน Repository** (ถ้ามีจะถูกหักคะแนน)
-- [ ] Push โค้ดขึ้น GitHub Repository ส่วนตัว
-- [ ] Deploy บน Streamlit Community Cloud
-- [ ] ใส่ API Key ใน Secrets ของ Streamlit Cloud
-- [ ] ทดสอบเปิด URL จากเครื่องอื่นหรือโหมด Incognito ว่าใช้งานได้จริง
+- [x] ตรวจให้แน่ใจว่า **ไม่มี API Key ใน Repository** (ถ้ามีจะถูกหักคะแนน)
+- [x] Push โค้ดขึ้น GitHub Repository ส่วนตัว (https://github.com/Alif024/LabFinal_NLP)
+- [x] Deploy บน Streamlit Community Cloud (repo `Alif024/LabFinal_NLP`, branch `main`, ไฟล์ `app.py`, Python 3.12): https://labfinalnlp-czysquxhqbgcpbsgvfewbr.streamlit.app/
+- [x] ใส่ `GROQ_API_KEY` และ `GROQ_MODEL` ใน Secrets ของ Streamlit Cloud
+- [x] ทดสอบเปิด URL จากเครื่องอื่นหรือโหมด Incognito ว่าใช้งานได้จริง (5 ต.ค. 2569: headless Chromium แบบไม่มีคุกกี้ ตอบได้ ถามต่อเนื่องได้ ตอบ "ไม่พบข้อมูล" ได้)
+- [x] ใส่ URL ของ Streamlit ใน `README.md`
 - [x] ทดสอบด้วยคำถามใน `test_questions.csv` (รวมถึงคำถามที่ต้องตอบว่า "ไม่พบข้อมูล")
 
 ## 6. สิ่งที่ต้องส่ง
-- [ ] กรอก `NLP-SubTest2.ipynb`:
-  - [ ] รหัสนักศึกษา
-  - [ ] ชื่อ-สกุล
+- [x] กรอก `NLP-SubTest2.ipynb`:
+  - [x] รหัสนักศึกษา
+  - [x] ชื่อ-สกุล
   - [x] หัวข้อที่ใช้
-  - [ ] URL หน้าเว็บ Streamlit
-  - [ ] GitHub Repository URL
-- [ ] ไฟล์ PDF รวมภาพหน้าจอการทำงานของเว็บ พร้อมคำอธิบาย
+  - [x] URL หน้าเว็บ Streamlit
+  - [x] GitHub Repository URL
+- [ ] ไฟล์ PDF รวมภาพหน้าจอการทำงานของเว็บ พร้อมคำอธิบาย (มีภาพตั้งต้นใน `screenshots/`)
 
 ## เกณฑ์การให้คะแนน
 | เกณฑ์ | คะแนน |

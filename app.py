@@ -260,9 +260,13 @@ def main():
             st.error(f"เกิดข้อผิดพลาด: {e}")
             st.session_state.messages.pop()
             return
-        sources = [{"title": c.title, "source": c.source, "file": c.file, "text": c.text, "score": s}
-                   for c, s in results]
-        render_sources(sources, query if query != question else None)
+        # ตอบว่าไม่พบข้อมูล (และไม่ได้อ้างอิงเอกสารใดเลย) -> ไม่ต้องแสดงเอกสารอ้างอิง
+        not_found = NOT_FOUND in answer and not re.search(r"\[\d+\]", answer)
+        sources = [] if not_found else [
+            {"title": c.title, "source": c.source, "file": c.file, "text": c.text, "score": s}
+            for c, s in results]
+        if sources:
+            render_sources(sources, query if query != question else None)
 
     st.session_state.messages.append({"role": "assistant", "content": answer,
                                       "sources": sources, "query": query if query != question else None})
