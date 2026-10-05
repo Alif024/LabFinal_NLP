@@ -42,7 +42,7 @@ def has_facts(answer, facts):
     return all(any(norm(alt) in norm(answer) for alt in fact.split("|")) for fact in facts.split(";") if fact)
 
 
-def evaluate_retrieval(index, test_rows, rewrite=None):
+def evaluate_retrieval(index, test_rows):
     dev = list(csv.DictReader(open(ROOT / "scripts" / "retrieval_dev.csv", encoding="utf-8")))
     test = [{"query": r["question"],
              "targets": "|".join(f.strip().split("_")[0] + ":" for f in r["source_file"].split(";"))}
@@ -50,17 +50,14 @@ def evaluate_retrieval(index, test_rows, rewrite=None):
     print("## การค้นหา (hit@k = สัดส่วนคำถามที่เจอเอกสารที่ถูกใน k อันดับแรก)\n")
     print("| วิธีค้นหา | ชุดข้อมูล | hit@1 | hit@3 | hit@5 | MRR |")
     print("|---|---|---|---|---|---|")
-    methods = [("vector (e5 + FAISS)", True, False, False),
-               ("BM25 (คำ + พยางค์)", False, True, False),
-               ("hybrid (RRF)", True, True, False)]
-    if rewrite:
-        methods.append(("hybrid + query rewriting (LLM)", True, True, True))
-    for name, use_vector, use_bm25, use_rewrite in methods:
+    methods = [("vector (e5 + FAISS)", True, False),
+               ("BM25 (คำ + พยางค์)", False, True),
+               ("hybrid (RRF)", True, True)]
+    for name, use_vector, use_bm25 in methods:
         for label, rows in ((f"test {len(test)} ข้อ", test), (f"dev {len(dev)} ข้อ", dev)):
             ranks = []
             for r in rows:
-                queries = rewrite(r["query"]).queries if use_rewrite else r["query"]
-                hits = index.search(queries, 10, use_vector, use_bm25)
+                hits = index.search(r["query"], 10, use_vector, use_bm25)
                 ranks.append(next((h.rank for h in hits if matches(h.chunk, r["targets"])), None))
             hit = lambda k: sum(1 for x in ranks if x and x <= k) / len(ranks)
             mrr = sum(1 / x for x in ranks if x) / len(ranks)
@@ -69,8 +66,8 @@ def evaluate_retrieval(index, test_rows, rewrite=None):
 
 
 def ask(index, client, model, question, history, k):
-    query = rag.rewrite_query(client, model, question, history)
-    hits = index.search(query.queries, k)
+    query = rag.condense_question(client, model, question, history)
+    hits = index.search(query, k)
     text = "".join(rag.answer_stream(client, model, question, hits, history))
     answer, cited = rag.finalize_answer(text, len(hits))
     return query, hits, answer, cited
@@ -110,8 +107,7 @@ def evaluate_conversations(index, client, model, k):
             history += [{"role": "user", "content": q}, {"role": "assistant", "content": answer}]
         ok = has_facts(answer, fact)
         passed += ok
-        print(f"{' -> '.join(turns)}\n    คำถามที่ใช้ค้นหา: {query.question}\n    คำค้นเพิ่มเติม: {query.keywords}"
-              f"\n    {answer[:300]}\n    "
+        print(f"{' -> '.join(turns)}\n    คำถามที่ใช้ค้นหา: {query}\n    {answer[:300]}\n    "
               f"{'ผ่าน' if ok else 'ไม่ผ่าน'} (ต้องมี: {fact})\n")
     print(f"สรุป: ผ่าน {passed}/{len(CONVERSATIONS)} บทสนทนา")
 
@@ -125,8 +121,8 @@ def main():
     index = rag.RagIndex()
     test_rows = list(csv.DictReader(open(ROOT / "test_questions.csv", encoding="utf-8")))
     print(f"คลังเอกสาร: {len(index.docs)} เอกสาร, {len(index.chunks)} chunks\n")
+    evaluate_retrieval(index, test_rows)
     if args.retrieval_only:
-        evaluate_retrieval(index, test_rows)
         return
 
     from groq import Groq
@@ -134,7 +130,6 @@ def main():
     secrets = tomllib.loads(secrets_file.read_text(encoding="utf-8")) if secrets_file.exists() else {}
     client = Groq(api_key=os.environ.get("GROQ_API_KEY") or secrets["GROQ_API_KEY"], max_retries=6)
     model = os.environ.get("GROQ_MODEL") or secrets.get("GROQ_MODEL", rag.DEFAULT_LLM)
-    evaluate_retrieval(index, test_rows, rewrite=lambda q: rag.rewrite_query(client, model, q, []))
     evaluate_answers(index, client, model, test_rows, args.k)
     evaluate_conversations(index, client, model, args.k)
 

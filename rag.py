@@ -9,6 +9,7 @@ from pathlib import Path
 
 import faiss
 import numpy as np
+from groq import RateLimitError
 from pythainlp.corpus import thai_stopwords
 from pythainlp.tokenize import syllable_tokenize, word_tokenize
 from pythainlp.util import normalize
@@ -18,6 +19,7 @@ from sentence_transformers import SentenceTransformer
 DATA_DIR = Path(__file__).parent / "data"
 EMBED_MODEL = "intfloat/multilingual-e5-small"
 DEFAULT_LLM = "openai/gpt-oss-120b"
+FALLBACK_LLMS = ["openai/gpt-oss-20b"]  # ใช้เมื่อโควตาของโมเดลหลักเต็ม (โควตาแยกกันรายโมเดล)
 CHUNK_SIZE = 900       # ตัวอักษรสูงสุดของเนื้อหาต่อ chunk (รวมหัวข้อแล้วยังไม่เกิน 512 token ของ e5)
 CHUNK_OVERLAP = 150    # ตัวอักษรที่ซ้อนกับชิ้นก่อนหน้า เมื่อย่อหน้าเดียวยาวเกิน CHUNK_SIZE
 CANDIDATES = 20        # จำนวนผลจากแต่ละวิธีค้นหา ก่อนนำมารวมอันดับ
@@ -37,25 +39,22 @@ SYSTEM_PROMPT = f"""คุณคือ "ผู้ช่วยยาสามั�
    ข้อยกเว้น: ถ้าเอกสารเขียนไว้ชัดว่า "ไม่มี" ยาหรือรายการที่ถูกถาม ถือว่าเอกสารมีคำตอบ ให้ตอบว่าไม่มีพร้อมอ้างอิง
    เช่น เอกสารเขียนว่า "ปัจจุบันยาในกลุ่มนี้ไม่มีรายการ..." ให้ตอบว่า "ปัจจุบันยังไม่มียาในกลุ่มนี้ที่เป็นยาสามัญประจำบ้าน [n]"
 4. ถ้ามีข้อมูลเพียงบางส่วน ให้ตอบเฉพาะส่วนที่มี และบอกว่าส่วนใดไม่พบในเอกสาร
-5. ถ้าคำถามถามว่า "มีอะไรบ้าง" ให้ระบุทุกรายการใน <context> ที่ตรงกับคำถามให้ครบ
+5. ถ้าคำถามถามว่า "มีอะไรบ้าง" ให้ระบุทุกรายการใน <context> ที่เกี่ยวข้องให้ครบ รวมถึงรายการที่ตรงกับคำถามเพียงบางส่วน
+   (เช่น ถามถึงโรค 2 โรค ให้รวมยาที่รักษาได้เพียงโรคใดโรคหนึ่งด้วย และบอกว่ารักษาโรคใด)
 6. ตอบกระชับ อ่านง่าย ใช้หัวข้อย่อยได้เมื่อมีหลายรายการ
 7. เฉพาะคำถามเรื่องขนาดยา วิธีใช้ หรือความปลอดภัยในการใช้ยา ให้ปิดท้ายสั้น ๆ ว่าควรปรึกษาเภสัชกรหรือแพทย์"""
 
-QUERY_PROMPT = """หน้าที่ของคุณคือเตรียมคำค้นสำหรับค้นหาเอกสารเรื่องยาสามัญประจำบ้าน ห้ามตอบคำถามเด็ดขาด
-
-1. คำถาม: เขียนคำถามล่าสุดใหม่ให้สมบูรณ์ในตัวเอง โดยแทนคำสรรพนามหรือคำที่ละไว้ (เช่น "ยานี้" "แล้ว...ล่ะ")
-   ด้วยสิ่งที่อ้างถึงในประวัติการสนทนา ถ้าคำถามสมบูรณ์อยู่แล้วให้ใช้คำถามเดิม
-2. คำค้น: คำสำคัญเพิ่มเติมที่เอกสารอาจใช้เรียกสิ่งเดียวกัน เช่น ศัพท์ทางการแพทย์ (ปวดหัว -> ปวดศีรษะ, เลือด -> โลหิต)
-   ชื่อยาทั้งภาษาไทยและภาษาอังกฤษ ชื่อสามัญ และชื่อกลุ่มยา ห้ามใส่ตัวเลข ขนาดยา หรือคำตอบ
+CONDENSE_PROMPT = """หน้าที่ของคุณคือเขียนคำถามล่าสุดใหม่ให้เป็นคำถามที่สมบูรณ์ในตัวเอง เพื่อใช้ค้นหาเอกสาร ห้ามตอบคำถามเด็ดขาด
+แทนคำสรรพนามหรือคำที่ละไว้ (เช่น "ยานี้" "แล้ว...ล่ะ") ด้วยสิ่งที่อ้างถึงในประวัติการสนทนา
+ถ้าคำถามสมบูรณ์อยู่แล้วให้ใช้คำถามเดิม ห้ามใส่ตัวเลขหรือข้อมูลที่เป็นคำตอบลงในคำถาม
 
 ประวัติการสนทนา:
 {history}
 
 คำถามล่าสุด: {question}
 
-ตอบเป็น 2 บรรทัดตามรูปแบบนี้เท่านั้น
-คำถาม: ...
-คำค้น: ..."""
+ตอบบรรทัดเดียวในรูปแบบ
+คำถาม: ..."""
 
 
 @dataclass
@@ -227,33 +226,29 @@ def strip_citations(text: str) -> str:
     return re.sub(r"[ \t]*" + CITATION.pattern, "", text)
 
 
-@dataclass
-class SearchQuery:
-    question: str   # คำถามที่สมบูรณ์ในตัวเอง (เข้าใจได้โดยไม่ต้องดูประวัติแชต)
-    keywords: str   # คำค้นเพิ่มเติม: ศัพท์ทางการ คำพ้อง ชื่อยาภาษาอังกฤษ
+def chat(client, model: str, **kwargs):
+    """เรียก LLM ถ้าโควตาของโมเดลหลักเต็ม (HTTP 429) จะลองโมเดลสำรองตามลำดับ"""
+    models = [model] + [m for m in FALLBACK_LLMS if m != model]
+    for i, m in enumerate(models):
+        try:
+            return client.chat.completions.create(model=m, **kwargs)
+        except RateLimitError:
+            if i == len(models) - 1:
+                raise
 
-    @property
-    def queries(self):
-        return [q for q in (self.question, self.keywords) if q]
 
-
-def rewrite_query(client, model: str, question: str, history) -> SearchQuery:
-    """Query rewriting: ทำคำถามต่อเนื่องให้สมบูรณ์ (เช่น "แล้วเด็กกินได้ไหม" -> "เด็กกินพาราเซตามอลได้ไหม")
-    และเพิ่มคำค้นที่เป็นศัพท์ทางการ/คำพ้อง เพื่อแก้ปัญหาคำในคำถามไม่ตรงกับคำในเอกสาร (เช่น เลือด/โลหิต)"""
+def condense_question(client, model: str, question: str, history) -> str:
+    """ทำคำถามต่อเนื่องให้สมบูรณ์ในตัวเองก่อนค้นหา เช่น "แล้วเด็กกินได้ไหม" -> "เด็กกินพาราเซตามอลได้ไหม"
+    คำถามแรกของบทสนทนาสมบูรณ์อยู่แล้ว จึงใช้ตามที่ผู้ใช้พิมพ์โดยไม่เรียก LLM"""
+    if not history:
+        return question
     recent = "\n".join(f"{'ผู้ใช้' if m['role'] == 'user' else 'ผู้ช่วย'}: {strip_citations(m['content'])[:500]}"
-                       for m in history[-4:]) or "(ไม่มี)"
-    resp = client.chat.completions.create(
-        model=model, temperature=0, max_tokens=800, reasoning_effort="low",
-        messages=[{"role": "user", "content": QUERY_PROMPT.format(history=recent, question=question)}],
-    )
+                       for m in history[-4:])
+    resp = chat(client, model, temperature=0, max_tokens=800, reasoning_effort="low",
+                messages=[{"role": "user", "content": CONDENSE_PROMPT.format(history=recent, question=question)}])
     out = resp.choices[0].message.content or ""
-    rewritten = re.search(r"^\W*คำถาม\W*:\s*(.+)$", out, flags=re.M)
-    keywords = re.search(r"^\W*คำค้น\W*:\s*(.+)$", out, flags=re.M)
-    return SearchQuery(
-        # คำถามแรกของบทสนทนาสมบูรณ์อยู่แล้ว ใช้ตามที่ผู้ใช้พิมพ์ เพื่อไม่ให้ความหมายเพี้ยน
-        question=rewritten.group(1).strip() if rewritten and history else question,
-        keywords=keywords.group(1).strip() if keywords else "",
-    )
+    rewritten = re.search(r"คำถาม\W*:\s*(.+)", out)
+    return rewritten.group(1).strip() if rewritten else (out.strip().splitlines() or [question])[0]
 
 
 def build_context(hits) -> str:
@@ -265,9 +260,8 @@ def answer_stream(client, model: str, question: str, hits, history):
     messages += [{"role": m["role"], "content": strip_citations(m["content"])} for m in history[-6:]]
     messages.append({"role": "user", "content":
                      f"<context>\n{build_context(hits)}\n</context>\n\nคำถาม: {question}"})
-    stream = client.chat.completions.create(
-        model=model, messages=messages, temperature=0.1, max_tokens=2048,
-        reasoning_effort="low", stream=True)
+    stream = chat(client, model, messages=messages, temperature=0.1, max_tokens=2048,
+                  reasoning_effort="low", stream=True)
     for part in stream:
         if part.choices:
             yield part.choices[0].delta.content or ""

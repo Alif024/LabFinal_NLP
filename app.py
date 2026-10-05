@@ -19,7 +19,8 @@ def get_index():
 
 @st.cache_resource
 def get_client():
-    return Groq(api_key=st.secrets["GROQ_API_KEY"])
+    # retry น้อยครั้ง: ถ้าโควตาเต็มให้สลับไปโมเดลสำรอง (rag.chat) แทนการรอนาน
+    return Groq(api_key=st.secrets["GROQ_API_KEY"], max_retries=1)
 
 
 def has_api_key() -> bool:
@@ -38,11 +39,8 @@ def source_info(hit):
 def render_sources(m):
     label = "📚 เอกสารอ้างอิงที่ใช้ตอบ" if m["cited"] else "📚 เอกสารที่ค้นพบ (คำตอบไม่ได้ระบุเลขอ้างอิง)"
     with st.expander(f"{label} ({len(m['sources'])} รายการ)"):
-        q = m["query"]
-        lines = [f"คำถามที่ใช้ค้นหา: {q.question}"] if m["rewritten"] else []
-        lines += [f"คำค้นเพิ่มเติม: {q.keywords}"] if q.keywords else []
-        if lines:
-            st.caption("  \n".join(lines))
+        if m.get("query"):
+            st.caption(f"คำถามที่ใช้ค้นหา: {m['query']}")
         for n, s in enumerate(m["sources"], start=1):
             st.markdown(f"**[{n}] [{s['title']}]({s['source']})**  \n"
                         f"`{s['file']}` · ผลค้นหาอันดับที่ {s['rank']} · ความใกล้เคียง {s['similarity']:.2f}")
@@ -110,8 +108,8 @@ def main():
     with st.chat_message("assistant"):
         try:
             with st.spinner("กำลังค้นหาเอกสาร..."):
-                search_query = rag.rewrite_query(get_client(), llm, question, history)
-                hits = index.search(search_query.queries, top_k)
+                query = rag.condense_question(get_client(), llm, question, history)
+                hits = index.search(query, top_k)
             placeholder, text = st.empty(), ""
             for token in rag.answer_stream(get_client(), llm, question, hits, history):
                 text += token
@@ -137,8 +135,7 @@ def main():
         else:
             sources, others = [source_info(h) for h in hits], []
         message = {"role": "assistant", "content": answer, "sources": sources, "others": others,
-                   "cited": bool(cited), "query": search_query,
-                   "rewritten": search_query.question != question}
+                   "cited": bool(cited), "query": query if query != question else None}
         if sources:
             render_sources(message)
 
