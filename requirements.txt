@@ -3,6 +3,7 @@ torch
 streamlit
 sentence-transformers
 faiss-cpu
+rank-bm25
 groq
 pythainlp
 numpy
