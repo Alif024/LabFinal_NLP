@@ -11,6 +11,7 @@
 import argparse
 import csv
 import os
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -37,8 +38,9 @@ def matches(chunk, targets):
 
 
 def has_facts(answer, facts):
-    """facts คั่นด้วย ; (ต้องมีครบ) และ | (มีอย่างใดอย่างหนึ่ง) เทียบแบบไม่สนตัวพิมพ์ ช่องว่าง และจุลภาค"""
-    norm = lambda s: s.lower().replace(",", "").replace(" ", "")
+    """facts คั่นด้วย ; (ต้องมีครบ) และ | (มีอย่างใดอย่างหนึ่ง) เทียบแบบไม่สนตัวพิมพ์ ช่องว่างทุกชนิด และจุลภาค
+    (LLM บางครั้งคั่นหลักพันด้วย narrow no-break space เช่น "4 000")"""
+    norm = lambda s: re.sub(r"[\s,]", "", s.lower())
     return all(any(norm(alt) in norm(answer) for alt in fact.split("|")) for fact in facts.split(";") if fact)
 
 
@@ -116,6 +118,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--retrieval-only", action="store_true")
     parser.add_argument("--k", type=int, default=5)
+    parser.add_argument("--ids", help="ทดสอบการตอบเฉพาะบางข้อ เช่น 6,11,16 (ประหยัดโควตา LLM)")
     args = parser.parse_args()
 
     index = rag.RagIndex()
@@ -130,6 +133,10 @@ def main():
     secrets = tomllib.loads(secrets_file.read_text(encoding="utf-8")) if secrets_file.exists() else {}
     client = Groq(api_key=os.environ.get("GROQ_API_KEY") or secrets["GROQ_API_KEY"], max_retries=6)
     model = os.environ.get("GROQ_MODEL") or secrets.get("GROQ_MODEL", rag.DEFAULT_LLM)
+    if args.ids:
+        wanted = set(args.ids.split(","))
+        evaluate_answers(index, client, model, [r for r in test_rows if r["id"] in wanted], args.k)
+        return
     evaluate_answers(index, client, model, test_rows, args.k)
     evaluate_conversations(index, client, model, args.k)
 

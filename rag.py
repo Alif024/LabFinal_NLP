@@ -33,7 +33,9 @@ SYSTEM_PROMPT = f"""คุณคือ "ผู้ช่วยยาสามั�
 
 กฎที่ต้องทำตามอย่างเคร่งครัด:
 1. ตอบโดยใช้ข้อมูลจาก <context> ที่ให้มาเท่านั้น ห้ามใช้ความรู้ภายนอกหรือเดาเพิ่มเติม
-2. ทุกประโยคที่เป็นข้อเท็จจริงต้องอ้างอิงหมายเลข id ของ <doc> ในวงเล็บเหลี่ยม เช่น [1] หรือ [2][3]
+   แนะนำยาได้เฉพาะเมื่อ "สรรพคุณ" ในเอกสารตรงกับอาการที่ถาม ห้ามอนุมานสรรพคุณหรือกลไกของยาที่เอกสารไม่ได้เขียนไว้
+2. ทุกประโยคที่เป็นข้อเท็จจริงต้องอ้างอิงหมายเลข id ของ <doc> ในวงเล็บเหลี่ยมท้ายประโยค เช่น [1] หรือ [2][3]
+   ใช้รูปแบบ [n] เท่านั้น ห้ามเขียนว่า <doc id="n"> หรือ "เอกสารที่ n"
    อ้างอิงเฉพาะเอกสารที่มีข้อมูลนั้นจริง เอกสารที่ไม่เกี่ยวกับคำถามให้ข้ามไป ไม่ต้องกล่าวถึง
 3. ถ้า <context> ไม่มีข้อมูลที่ตอบคำถามได้ ให้ตอบเพียงว่า "{NOT_FOUND}" แล้วไม่ต้องอธิบายเพิ่ม
    ข้อยกเว้น: ถ้าเอกสารเขียนไว้ชัดว่า "ไม่มี" ยาหรือรายการที่ถูกถาม ถือว่าเอกสารมีคำตอบ ให้ตอบว่าไม่มีพร้อมอ้างอิง
@@ -172,6 +174,22 @@ def chunk_document(doc):
 
 STOPWORDS = frozenset(thai_stopwords())
 
+# ศัพท์ภาษาพูด -> ศัพท์ทางการที่เอกสาร (ประกาศกระทรวงฯ) ใช้ เพิ่มต่อท้ายคำค้นเมื่อพบในคำถาม
+# เช่น "ยาบำรุงเลือด" ไม่มีคำว่า "โลหิต" ทำให้ค้นไม่เจอ "ยาเม็ดบำรุงโลหิต เฟอร์รัส ซัลเฟต"
+SYNONYMS = {
+    "เลือด": "โลหิต",
+    "ปวดหัว": "ปวดศีรษะ",
+    "เวียนหัว": "วิงเวียน",
+    "ท้องร่วง": "ท้องเสีย",
+    "ไข้ขึ้น": "ไข้",
+    "ตัวร้อน": "ไข้",
+}
+
+
+def expand_query(query: str) -> str:
+    extra = [formal for lay, formal in SYNONYMS.items() if lay in query and formal not in query]
+    return " ".join([query, *dict.fromkeys(extra)])
+
 
 def tokenize(text: str):
     """ตัดคำสำหรับ BM25 ด้วย pythainlp ทั้งระดับคำ (newmm) และระดับพยางค์ โดยตัดช่องว่าง เครื่องหมาย และ stopword ออก
@@ -198,7 +216,7 @@ class RagIndex:
 
     def search(self, queries, k: int, use_vector: bool = True, use_bm25: bool = True):
         """ค้นหาด้วยคำค้นหนึ่งหรือหลายคำค้น (เช่น คำถาม + คำค้นเพิ่มเติม) แล้วรวมทุกอันดับด้วย RRF"""
-        queries = [clean_text(q) for q in ([queries] if isinstance(queries, str) else queries) if q.strip()]
+        queries = [expand_query(clean_text(q)) for q in ([queries] if isinstance(queries, str) else queries) if q.strip()]
         q = self.model.encode([f"query: {x}" for x in queries], normalize_embeddings=True).astype("float32")
         n = min(CANDIDATES, len(self.chunks))
         rankings = []
@@ -258,8 +276,10 @@ def build_context(hits) -> str:
 def answer_stream(client, model: str, question: str, hits, history):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += [{"role": m["role"], "content": strip_citations(m["content"])} for m in history[-6:]]
+    # ย้ำกฎการอ้างอิงไว้ท้ายข้อความ (โมเดลขนาดเล็กทำตามคำสั่งที่อยู่ใกล้คำถามได้ดีกว่า)
     messages.append({"role": "user", "content":
-                     f"<context>\n{build_context(hits)}\n</context>\n\nคำถาม: {question}"})
+                     f"<context>\n{build_context(hits)}\n</context>\n\nคำถาม: {question}\n\n"
+                     f"(ใส่เลขอ้างอิง [n] ท้ายทุกข้อเท็จจริงและทุกหัวข้อย่อย หรือตอบว่า \"{NOT_FOUND}\")"})
     stream = chat(client, model, messages=messages, temperature=0.1, max_tokens=2048,
                   reasoning_effort="low", stream=True)
     for part in stream:
@@ -277,11 +297,19 @@ def _citation_numbers(inner: str):
     return nums
 
 
+def normalize_citations(text: str) -> str:
+    """แปลงรูปแบบการอ้างอิงอื่นที่ LLM บางตัวใช้ให้เป็น [n] เหมือนกันทุกคำตอบ:
+    【1】 / 【1†source】 / <doc id="1"> / "เอกสาร 1 และ 3" / "เอกสารที่ 5" """
+    text = re.sub(r"【(\d+)[^】]*】", r"[\1]", text)
+    text = re.sub(r"<\s*/?\s*doc\s+id\s*=\s*[\"']?(\d+)[\"']?\s*/?\s*>", r"[\1]", text)
+    return re.sub(r"เอกสาร(?:ที่|หมายเลข)?\s*(\d+(?:\s*(?:,|และ|หรือ)\s*\d+)*)",
+                  lambda m: "เอกสาร " + "".join(f"[{n}]" for n in re.findall(r"\d+", m.group(1))), text)
+
+
 def finalize_answer(text: str, n_docs: int):
     """จัดเลขอ้างอิงใหม่ตามลำดับที่ปรากฏในคำตอบ (เอกสารที่ถูกอ้างถึงก่อนได้ [1]) และตัดเลขที่ไม่มีเอกสารจริง
     คืนค่า (คำตอบ, ลำดับ id เดิมของเอกสารที่ถูกอ้างอิง)"""
-    # บางโมเดลอ้างอิงแบบ 【1】 หรือ 【1†source】 ให้เป็นรูปแบบ [1] เหมือนกันทุกคำตอบ
-    text = re.sub(r"【(\d+)[^】]*】", r"[\1]", text)
+    text = normalize_citations(text)
     cited = []
     for m in CITATION.finditer(text):
         for n in _citation_numbers(m.group(1)):
